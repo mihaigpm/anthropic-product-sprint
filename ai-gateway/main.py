@@ -16,8 +16,13 @@ from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
 from database import engine, Base, get_db
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from models import Message
 import models
+import uuid
+from schemas import MessageResponse
 
+import json
 
 load_dotenv()
 
@@ -46,54 +51,91 @@ async def lifespan(app: FastAPI):
 # Now define the app using the lifespan manager
 app = FastAPI(lifespan=lifespan)
 
-class Message(BaseModel):
-    role: str = Field(..., pattern="^(user|assistant)$")
+class ChatMessage(BaseModel):
+    role: str
     content: str
 
 class ChatRequest(BaseModel):
     model: str = CURRENT_MODEL
     system_prompt: str = "You are a helpful, senior-level coding assistant."
-    messages: List[Message]
+    messages: List[ChatMessage]
     max_tokens: Optional[int] = 4096
     temperature: float = Field(default=0.7, ge=0, le=1)
 
-from tools.registry import registry
-
 @app.post("/v1/chat/agent")
-async def agent_endpoint(request: ChatRequest):
-    # 1. Provide all registered tool definitions to Claude
-    response = await app.state.anthropic_client.messages.create(
-        model=request.model,
-        max_tokens=2048,
-        tools=registry.get_definitions(),
-        messages=[msg.model_dump() for msg in request.messages]
+async def agent_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)):
+    session_id = "test-session-123"
+
+    # 1. Load History
+    # Query the database using the SQLAlchemy class directly from the models module
+    # This avoids Pydantic trying to parse it as an API type
+    result = await db.execute(
+        select(models.Message)
+        .where(models.Message.session_id == session_id)
+        .order_by(models.Message.created_at)
     )
+    db_messages = result.scalars().all()
+    
+    # 2. Format History (Crucial: Handling tool blocks)
+    messages = []
+    for msg in db_messages:
+        # If the content looks like JSON (for tool results), parse it back
+        content = msg.content
+        if content.startswith('[') or content.startswith('{'):
+            try:
+                content = json.loads(content)
+            except:
+                pass
+        messages.append({"role": msg.role, "content": content})
+    
+    # Add new user message
+    new_user_content = request.messages[-1].content
+    messages.append({"role": "user", "content": new_user_content})
+    db.add(Message(session_id=session_id, role="user", content=new_user_content))
 
-    if response.stop_reason == "tool_use":
-        # Handle multiple tool calls
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                result = await registry.call_tool(block.name, block.input)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": str(result)
-                })
+    # 3. Agent Loop
+    while True:
+        try:
+            response = await app.state.anthropic_client.messages.create(
+                model=request.model,
+                max_tokens=2048,
+                tools=registry.get_definitions(),
+                messages=messages
+            )
+        except Exception as e:
+            print(f"❌ Anthropic API Error: {e}")
+            await db.rollback()
+            return {"content": f"I hit a snag calling the AI: {str(e)}"}
 
-        # Final pass: Give the tool data back to Claude
-        final_response = await app.state.anthropic_client.messages.create(
-            model=request.model,
-            max_tokens=2048,
-            messages=[
-                *[msg.model_dump() for msg in request.messages],
-                {"role": "assistant", "content": response.content},
-                {"role": "user", "content": tool_results}
-            ]
-        )
-        return {"content": final_response.content[0].text}
+        if response.stop_reason != "tool_use":
+            final_text = response.content[0].text
+            break
 
-    return {"content": response.content[0].text}
+        # Handle tools
+        # We store the assistant's "thinking" blocks in memory for this loop
+        messages.append({"role": "assistant", "content": response.content})
+        
+        tool_tasks = []
+        for content_block in response.content:
+            if content_block.type == "tool_use":
+                task = registry.execute_tool(content_block.name, content_block.input)
+                tool_tasks.append((content_block.id, task))
+
+        results = await asyncio.gather(*(t[1] for t in tool_tasks))
+
+        for i, (tool_use_id, _) in enumerate(tool_tasks):
+            result_block = {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": str(results[i]),
+            }
+            messages.append({"role": "user", "content": [result_block]})
+        
+    # 4. Save Final Answer
+    db.add(Message(session_id=session_id, role="assistant", content=final_text))
+    await db.commit()
+
+    return {"content": final_text}
     
 @app.post("/v1/chat/stream")
 async def chat_stream(request: ChatRequest):

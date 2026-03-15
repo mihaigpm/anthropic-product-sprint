@@ -14,7 +14,7 @@ class ToolRegistry:
     def get_definitions(self) -> List[dict]:
         return [tool.definition for tool in self._tools.values()]
 
-    async def call_tool(self, name: str, arguments: dict) -> Any:
+    async def execute_tool(self, name: str, arguments: dict) -> Any:
         tool = self._tools.get(name)
         if not tool:
             return {"error": f"Tool {name} not found"}

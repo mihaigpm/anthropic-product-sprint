@@ -1,5 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime
-from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, Text, DateTime, func
 from database import Base
 
 class Message(Base):
@@ -9,4 +8,4 @@ class Message(Base):
     session_id = Column(String, index=True)  # Links messages to a specific chat session
     role = Column(String)                    # 'user' or 'assistant' (or 'system')
     content = Column(Text)                   # The actual markdown/text
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
