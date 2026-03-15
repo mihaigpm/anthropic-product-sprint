@@ -9,6 +9,8 @@ from fastapi.responses import StreamingResponse
 import json
 import asyncio
 import uvicorn
+import time
+from starlette.middleware.base import BaseHTTPMiddleware
 
 load_dotenv()
 
@@ -56,10 +58,11 @@ async def chat_endpoint(request: ChatRequest):
     
 @app.post("/v1/chat/stream")
 async def chat_stream(request: ChatRequest):
+    start_time = time.time()
     # The event generator handles the persistent connection
     async def event_generator():
+        first_token_sent = False
         try:
-            # In 2026, the .stream() helper is highly optimized for Claude 4.6
             async with app.state.anthropic_client.messages.stream(
                 model=request.model,
                 max_tokens=request.max_tokens,
@@ -68,6 +71,10 @@ async def chat_stream(request: ChatRequest):
             ) as stream:
                 # Loop through the stream as tokens are generated
                 async for text in stream.text_stream:
+                    if not first_token_sent:
+                        ttft = time.time() - start_time
+                        print(f"METRIC: Time to First Token (TTFT): {ttft:.4f}s")
+                        first_token_sent = True
                     # SSE standard format: "data: <JSON>\n\n"
                     # Sending as JSON allows the client to parse metadata easily
                     yield f"data: {json.dumps({'text': text})}\n\n"
@@ -78,6 +85,25 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+class LatencyLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        start_time = time.time()
+        
+        # Process the request
+        response = await call_next(request)
+        
+        # Calculate total duration for non-streaming or setup for streaming
+        process_time = time.time() - start_time
+        
+        # Add a custom header so the client/browser can also see the latency
+        response.headers["X-Process-Time"] = str(process_time)
+        
+        print(f"DEBUG: Path: {request.url.path} | Total processing time: {process_time:.4f}s")
+        return response
+
+# Register the middleware
+app.add_middleware(LatencyLoggingMiddleware)
     
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
