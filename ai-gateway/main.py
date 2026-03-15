@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from anthropic import AsyncAnthropic
@@ -112,8 +113,15 @@ class LatencyLoggingMiddleware(BaseHTTPMiddleware):
         print(f"DEBUG: Path: {request.url.path} | Total processing time: {process_time:.4f}s")
         return response
 
-# Register the middleware
+# Register the middlewares
 app.add_middleware(LatencyLoggingMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, you'd specify your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
     
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
