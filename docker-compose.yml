@@ -1,7 +1,17 @@
-version: '3.8'
-
 services:
-  # 1. The FastAPI Backend
+  # 1. The PostgreSQL Database (NEW)
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ai_user
+      POSTGRES_PASSWORD: ai_password
+      POSTGRES_DB: ai_gateway_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 2. The FastAPI Backend
   api:
     build: 
       context: ./ai-gateway
@@ -9,10 +19,15 @@ services:
       - "8000:8000"
     env_file:
       - ./ai-gateway/.env
+    environment:
+      # Tell the API how to connect to the database container
+      - DATABASE_URL=postgresql://ai_user:ai_password@db:5432/ai_gateway_db
     volumes:
-      - ./ai-gateway:/app # Hot-reloading for local dev
+      - ./ai-gateway:/app
+    depends_on:
+      - db # Ensure DB starts before the API
 
-  # 2. The React Frontend
+  # 3. The React Frontend
   frontend:
     image: node:20-alpine
     working_dir: /app
@@ -21,3 +36,7 @@ services:
     ports:
       - "5173:5173"
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+# Declare the persistent volume for the database
+volumes:
+  postgres_data:
