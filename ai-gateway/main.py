@@ -34,6 +34,7 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     model: str = CURRENT_MODEL
+    system_prompt: str = "You are a helpful, senior-level coding assistant."
     messages: List[Message]
     max_tokens: Optional[int] = 4096
     temperature: float = Field(default=0.7, ge=0, le=1)
@@ -68,6 +69,13 @@ async def chat_stream(request: ChatRequest):
                 model=request.model,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                system=[
+                    {
+                        "type": "text",
+                        "text": request.system_prompt,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ],
                 messages=[msg.model_dump() for msg in request.messages]
             ) as stream:
                 # Loop through the stream as tokens are generated
