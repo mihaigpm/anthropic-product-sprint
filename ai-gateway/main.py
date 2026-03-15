@@ -1,10 +1,25 @@
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from anthropic import AsyncAnthropic # Use the Async client
+from dotenv import load_dotenv
 import uvicorn
 
-app = FastAPI(title="Anthropic Product Sprint - Gateway")
+load_dotenv()
+
+# 1. Manage the Lifespan of the Client
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Create the client
+    app.state.anthropic_client = AsyncAnthropic()
+    yield
+    # Shutdown: Cleanly close the client
+    await app.state.anthropic_client.close()
+
+# Pass the lifespan to the FastAPI app
+app = FastAPI(title="Anthropic Product Sprint - Gateway", lifespan=lifespan)
 
 # 1. Structured Data Models
 class Message(BaseModel):
@@ -25,12 +40,25 @@ def health_check():
 # 3. The Core Endpoint
 @app.post("/v1/chat")
 async def chat_endpoint(request: ChatRequest):
-    # TODO involve the real Anthropic SDK.
-    return {
-        "id": "mock_123",
-        "role": "assistant",
-        "content": f"Received {len(request.messages)} messages. Ready for Claude integration."
-    }
+    try:
+        formatted_messages = [msg.model_dump() for msg in request.messages]
+        response = await app.state.anthropic_client.messages.create(
+            model=request.model,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            messages=formatted_messages
+        )
+
+        return {
+            "id": response.id,
+            "content": response.content[0].text,
+            "usage": {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
